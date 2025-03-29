@@ -4,7 +4,6 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -19,24 +18,25 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-// TestCase har bir test holatini tasvirlaydi
+// TestCase describes each test case
 type TestCase struct {
 	ID     int    `json:"id"`
 	Input  string `json:"input"`
 	Output string `json:"output,omitempty"`
+	IsTrue bool   `json:"is_true,omitempty"`
 }
 
-// Submission foydalanuvchi yuborishini tasvirlaydi
+// Submission describes user code submission
 type Submission struct {
-	Code            string     `json:"code"`
-	Language        string     `json:"language"`
-	ExecutionTest   string     `json:"execution_test_cases"`
-	TestCases       []TestCase `json:"test_cases"`
+	Code          string     `json:"code"`
+	Language      string     `json:"language"`
+	ExecutionTest string     `json:"execution_test_cases"`
+	TestCases     []TestCase `json:"test_cases"`
 }
 
-// ExecutionResult kod bajarish natijasini tasvirlaydi
+// ExecutionResult describes code execution results
 type ExecutionResult struct {
-	LanguageID     string     `json:"language_id"`
+	LanguageID    string     `json:"language_id"`
 	Code          string     `json:"code"`
 	IsAccepted    bool       `json:"is_accepted"`
 	ExecutionTime float64    `json:"execution_time"`
@@ -111,9 +111,8 @@ func getMemoryUsage() (float64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("failed to parse memory usage: %v", err)
 	}
-	return float64(usageKB) / 1024, // Convert KB to MB
+	return float64(usageKB) / 1024, nil
 }
-
 
 func executeCode(cli *client.Client, containerName, command string) (string, float64, float64, error) {
 	startTime := time.Now()
@@ -126,7 +125,6 @@ func executeCode(cli *client.Client, containerName, command string) (string, flo
 	}
 
 	execIDResp, err := cli.ContainerExecCreate(context.Background(), containerName, execConfig)
-
 	if err != nil {
 		return "", 0, 0, fmt.Errorf("failed to create exec: %v", err)
 	}
@@ -197,7 +195,6 @@ func main() {
 		containerName := fmt.Sprintf("%s-app", submission.Language)
 		fileName := getFileName(submission.Language)
 
-		// Combine code and execution test cases
 		fullCode := fmt.Sprintf("%s\n%s", submission.Code, submission.ExecutionTest)
 		if err := copyToContainer(cli, containerName, fileName, fullCode); err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -212,13 +209,12 @@ func main() {
 			})
 		}
 
-		// Process test cases results
 		testResults := processTestCases(submission, output)
 
 		result := ExecutionResult{
-			LanguageID:     submission.Language,
+			LanguageID:    submission.Language,
 			Code:          submission.Code,
-			IsAccepted:    true, // Assuming all passed for simplicity
+			IsAccepted:    true,
 			ExecutionTime: execTime,
 			MemoryUsage:   memoryUsage,
 			TestCases:     testResults,
