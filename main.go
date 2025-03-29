@@ -176,10 +176,10 @@ func main() {
 		JSONDecoder: json.Unmarshal,
 	})
 
+	// Docker client sozlamalari (WithTimeout olib tashlandi)
 	cli, err := client.NewClientWithOpts(
 		client.FromEnv,
 		client.WithAPIVersionNegotiation(),
-		client.WithTimeout(30*time.Second),
 	)
 	if err != nil {
 		log.Fatalf("Docker klientini yaratishda xato: %v", err)
