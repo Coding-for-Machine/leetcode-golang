@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    container_name: code-execution-app
+    ports:
+      - "3000:3000"
+    networks:
+      - code-network
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    depends_on:
+      - python-app
+      - go-app
+    environment:
+      - PYTHON_CONTAINER=python-app
+      - GO_CONTAINER=go-app
+
+  python-app:
+    build:
+      context: ./language/python
+    container_name: python-app
+    networks:
+      - code-network
+    restart: unless-stopped
+    volumes:
+      - "./language/python/app:/app"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "print('OK')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+  go-app:
+    build:
+      context: ./language/go
+    container_name: go-app
+    networks:
+      - code-network
+    restart: unless-stopped
+    volumes:
+      - "./language/go/app:/app"
+
+networks:
+  code-network:
+    driver: bridge
