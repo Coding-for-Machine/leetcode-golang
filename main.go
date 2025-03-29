@@ -4,10 +4,12 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
+// TestCase - har bir test holati uchun struktura
 type TestCase struct {
 	ID     int    `json:"id"`
 	Input  string `json:"input"`
@@ -23,6 +26,7 @@ type TestCase struct {
 	IsTrue bool   `json:"is_true,omitempty"`
 }
 
+// Submission - foydalanuvchi yuborishi uchun struktura
 type Submission struct {
 	Code          string     `json:"code"`
 	Language      string     `json:"language"`
@@ -30,6 +34,7 @@ type Submission struct {
 	TestCases     []TestCase `json:"test_cases"`
 }
 
+// ExecutionResult - kod bajarish natijalari
 type ExecutionResult struct {
 	LanguageID    string     `json:"language_id"`
 	Code          string     `json:"code"`
@@ -73,6 +78,40 @@ func createTarFile(fileName, content string) (*bytes.Buffer, error) {
 	}
 
 	return buffer, nil
+}
+
+func copyToContainer(cli *client.Client, containerName, fileName, content string) error {
+	tarBuffer, err := createTarFile(fileName, content)
+	if err != nil {
+		return fmt.Errorf("tar fayl yaratishda xato: %v", err)
+	}
+
+	return cli.CopyToContainer(
+		context.Background(),
+		containerName,
+		"/app/",
+		tarBuffer,
+		types.CopyToContainerOptions{},
+	)
+}
+
+func getMemoryUsage() (float64, error) {
+	data, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return 0, fmt.Errorf("xotira ishlatilishini o'qib bo'lmadi: %v", err)
+	}
+
+	re := regexp.MustCompile(`VmRSS:\s+(\d+) kB`)
+	matches := re.FindStringSubmatch(string(data))
+	if len(matches) < 2 {
+		return 0, fmt.Errorf("xotira ishlatilishi topilmadi")
+	}
+
+	usageKB, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return 0, fmt.Errorf("xotira ishlatilishini tahlil qilishda xato: %v", err)
+	}
+	return float64(usageKB) / 1024, nil // KB dan MB ga o'tkazish
 }
 
 func executeCode(cli *client.Client, containerName, command string) (string, float64, float64, error) {
@@ -131,10 +170,7 @@ func processTestCases(submission Submission, output string) []TestCase {
 }
 
 func main() {
-	app := fiber.New(fiber.Config{
-		JSONEncoder: json.Marshal,
-		JSONDecoder: json.Unmarshal,
-	})
+	app := fiber.New()
 
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
@@ -153,28 +189,7 @@ func main() {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Qo'llab-quvvatlanmaydigan dasturlash tili"})
 		}
 
-		containerName := fmt.Sprintf("%s-app", submission.Language)
-		fileName := getFileName(submission.Language)
-		fullCode := fmt.Sprintf("%s\n%s", submission.Code, submission.ExecutionTest)
-
-		if err := copyToContainer(cli, containerName, fileName, fullCode); err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
-		}
-
-		output, execTime, memoryUsage, err := executeCode(cli, containerName, command)
-		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
-		}
-
-		result := ExecutionResult{
-			LanguageID:    submission.Language,
-			Code:          submission.Code,
-			IsAccepted:    true,
-			ExecutionTime: execTime,
-			MemoryUsage:   memoryUsage,
-			TestCases:     processTestCases(submission, output),
-		}
-		return c.JSON(result)
+		return c.JSON(fiber.Map{"message": "Kod ishga tushdi"})
 	})
 
 	log.Println("Server 3000-portda ishga tushmoqda...")
