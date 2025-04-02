@@ -18,30 +18,16 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-// TestCase - har bir test holati uchun struktura
 type TestCase struct {
-	ID     int    `json:"id"`
 	Input  string `json:"input"`
-	Output string `json:"output,omitempty"`
-	IsTrue bool   `json:"is_true,omitempty"`
+	Output string `json:"output"`
 }
 
-// Submission - foydalanuvchi yuborishi uchun struktura
 type Submission struct {
-	Code          string     `json:"code"`
-	Language      string     `json:"language"`
-	ExecutionTest string     `json:"execution_test_cases"`
-	TestCases     []TestCase `json:"test_cases"`
-}
-
-// ExecutionResult - kod bajarish natijalari
-type ExecutionResult struct {
-	LanguageID    string     `json:"language_id"`
-	Code          string     `json:"code"`
-	IsAccepted    bool       `json:"is_accepted"`
-	ExecutionTime float64    `json:"execution_time"`
-	MemoryUsage   float64    `json:"memory_usage"`
-	TestCases     []TestCase `json:"testcases_json"`
+	Language    string     `json:"language"`
+	Code        string     `json:"code"`
+	ExecuteCode string     `json:"execute_code"`
+	TestCases   []TestCase `json:"test_cases"`
 }
 
 var languageCommands = map[string]string{
@@ -50,14 +36,12 @@ var languageCommands = map[string]string{
 }
 
 func getFileName(language string) string {
-	switch language {
-	case "python":
+	if language == "python" {
 		return "solution.py"
-	case "go":
+	} else if language == "go" {
 		return "solution.go"
-	default:
-		return "solution.txt"
 	}
+	return "solution.txt"
 }
 
 func createTarFile(fileName, content string) (*bytes.Buffer, error) {
@@ -71,95 +55,169 @@ func createTarFile(fileName, content string) (*bytes.Buffer, error) {
 		Size: int64(len(content)),
 	}
 	if err := tarWriter.WriteHeader(hdr); err != nil {
-		return nil, fmt.Errorf("tar header yozishda xato: %v", err)
+		return nil, fmt.Errorf("Tar header yozishda xatolik: %v", err)
 	}
 	if _, err := tarWriter.Write([]byte(content)); err != nil {
-		return nil, fmt.Errorf("tar faylga yozishda xato: %v", err)
+		return nil, fmt.Errorf("Tar fayl yozishda xatolik: %v", err)
 	}
 
 	return buffer, nil
 }
 
-func copyToContainer(cli *client.Client, containerName, fileName, content string) error {
+func fileConnect(cli *client.Client, containerName, fileName, containerPath, content string) error {
 	tarBuffer, err := createTarFile(fileName, content)
 	if err != nil {
-		return fmt.Errorf("tar fayl yaratishda xato: %v", err)
+		return fmt.Errorf("Tar fayl yaratishda xatolik: %v", err)
 	}
 
-	return cli.CopyToContainer(
-		context.Background(),
-		containerName,
-		"/app/",
-		tarBuffer,
-		types.CopyToContainerOptions{},
-	)
+	return cli.CopyToContainer(context.Background(), containerName, containerPath, tarBuffer, types.CopyToContainerOptions{})
 }
 
-func getMemoryUsage() (float64, error) {
+func getMemoryUsage() (int, error) {
 	data, err := os.ReadFile("/proc/self/status")
 	if err != nil {
-		return 0, fmt.Errorf("xotira ishlatilishini o'qib bo'lmadi: %v", err)
+		return 0, fmt.Errorf("Memory usage o'qib bo'lmadi: %v", err)
 	}
 
 	re := regexp.MustCompile(`VmRSS:\s+(\d+) kB`)
 	matches := re.FindStringSubmatch(string(data))
 	if len(matches) < 2 {
-		return 0, fmt.Errorf("xotira ishlatilishi topilmadi")
+		return 0, fmt.Errorf("Memory usage topilmadi")
 	}
-
-	usageKB, err := strconv.Atoi(matches[1])
-	if err != nil {
-		return 0, fmt.Errorf("xotira ishlatilishini tahlil qilishda xato: %v", err)
-	}
-	return float64(usageKB) / 1024, nil // KB dan MB ga o'tkazish
+	return strconv.Atoi(matches[1])
 }
 
-func executeCode(cli *client.Client, containerName, command string) (string, float64, float64, error) {
+func generateFullCode(language, userCode, executeCode string, testCases []TestCase) string {
+	switch language {
+	case "python":
+		var builder strings.Builder
+		builder.WriteString(userCode + "\n\n")
+
+		if len(testCases) > 0 {
+			// Test rejimi
+			builder.WriteString("if __name__ == '__main__':\n")
+			builder.WriteString("    import sys\n")
+			builder.WriteString("    if len(sys.argv) > 1 and sys.argv[1] == 'test':\n")
+
+			// Test holatlari uchun kod
+			for i, testCase := range testCases {
+				builder.WriteString(fmt.Sprintf("        # Test %d\n", i+1))
+				builder.WriteString(fmt.Sprintf("        input_values = %s\n", testCase.Input))
+				builder.WriteString(fmt.Sprintf("        expected_output = %s\n", testCase.Output))
+
+				// Execute codeni test qilish uchun moslashtirish
+				testExecute := strings.ReplaceAll(executeCode, "input()", fmt.Sprintf("'%s'", testCase.Input))
+				builder.WriteString(fmt.Sprintf("        %s\n", testExecute))
+
+				// Natijani tekshirish
+				builder.WriteString(fmt.Sprintf("        if result != expected_output:\n"))
+				builder.WriteString(fmt.Sprintf("            print(f\"Test %d failed: expected {expected_output}, got {result}\")\n", i+1))
+				builder.WriteString(fmt.Sprintf("        else:\n"))
+				builder.WriteString(fmt.Sprintf("            print(f\"Test %d passed\")\n", i+1))
+			}
+		} else {
+			// Oddiy ishga tushirish rejimi
+			builder.WriteString("if __name__ == '__main__':\n")
+			builder.WriteString(fmt.Sprintf("    %s\n", executeCode))
+		}
+		return builder.String()
+
+	case "go":
+		var builder strings.Builder
+		builder.WriteString("package main\n\n")
+		builder.WriteString("import (\n")
+		builder.WriteString("    \"fmt\"\n")
+		builder.WriteString("    \"os\"\n")
+		builder.WriteString("    \"strconv\"\n")
+		builder.WriteString(")\n\n")
+		builder.WriteString(userCode + "\n\n")
+		builder.WriteString("func main() {\n")
+
+		if len(testCases) > 0 {
+			// Test rejimi
+			builder.WriteString("    if len(os.Args) > 1 && os.Args[1] == \"test\" {\n")
+			for i, testCase := range testCases {
+				builder.WriteString(fmt.Sprintf("        // Test %d\n", i+1))
+				builder.WriteString(fmt.Sprintf("        input := %s\n", testCase.Input))
+				builder.WriteString("        expected := " + testCase.Output + "\n")
+
+				// Execute codeni test qilish uchun moslashtirish
+				testExecute := strings.ReplaceAll(executeCode, "fmt.Scanln", "func() { return input }")
+				builder.WriteString("        " + testExecute + "\n")
+			}
+			builder.WriteString("    } else {\n")
+			builder.WriteString("        " + executeCode + "\n")
+			builder.WriteString("    }\n")
+		} else {
+			// Oddiy ishga tushirish rejimi
+			builder.WriteString("    " + executeCode + "\n")
+		}
+		builder.WriteString("}")
+		return builder.String()
+
+	default:
+		return userCode + "\n\n" + executeCode
+	}
+}
+
+func executeCode(cli *client.Client, containerName, command string, isTest bool) (string, float64, int, error) {
 	startTime := time.Now()
+
+	fullCommand := command
+	if isTest {
+		fullCommand += " test" // Test rejimini ishga tushirish
+	}
 
 	execConfig := types.ExecConfig{
 		AttachStdout: true,
 		AttachStderr: true,
 		Tty:          false,
-		Cmd:          []string{"sh", "-c", command},
+		Cmd:          []string{"sh", "-c", fullCommand},
 	}
 
 	execIDResp, err := cli.ContainerExecCreate(context.Background(), containerName, execConfig)
 	if err != nil {
-		return "", 0, 0, fmt.Errorf("exec yaratishda xato: %v", err)
+		return "", 0, 0, fmt.Errorf("Exec yaratishda xatolik: %v", err)
 	}
 
 	resp, err := cli.ContainerExecAttach(context.Background(), execIDResp.ID, types.ExecStartCheck{})
 	if err != nil {
-		return "", 0, 0, fmt.Errorf("execga ulanishda xato: %v", err)
+		return "", 0, 0, fmt.Errorf("Exec attach qilishda xatolik: %v", err)
 	}
 	defer resp.Close()
 
 	var outputBuffer bytes.Buffer
 	if _, err := io.Copy(&outputBuffer, resp.Reader); err != nil {
-		return "", 0, 0, fmt.Errorf("natijani o'qishda xato: %v", err)
+		return "", 0, 0, fmt.Errorf("Natijani o'qishda xatolik: %v", err)
 	}
 
 	executionTime := time.Since(startTime).Seconds()
 	memoryUsage, _ := getMemoryUsage()
 
-	return strings.TrimSpace(outputBuffer.String()), executionTime, memoryUsage, nil
+	return outputBuffer.String(), executionTime, memoryUsage, nil
 }
 
-func processTestCases(submission Submission, output string) []TestCase {
-	var results []TestCase
-	outputLines := strings.Split(output, "\n")
+func parseTestOutput(output string, testCases []TestCase) []map[string]interface{} {
+	var results []map[string]interface{}
 
-	for i, tc := range submission.TestCases {
-		result := TestCase{
-			ID:    tc.ID,
-			Input: tc.Input,
+	for i, testCase := range testCases {
+		result := map[string]interface{}{
+			"test_case": i + 1,
+			"input":     testCase.Input,
+			"expected":  testCase.Output,
+			"status":    "unknown",
+			"output":    "",
 		}
 
-		if i < len(outputLines) {
-			result.Output = outputLines[i]
-			if tc.Output != "" {
-				result.IsTrue = (result.Output == tc.Output)
+		// Python uchun test natijalarini tahlil qilish
+		if strings.Contains(output, fmt.Sprintf("Test %d passed", i+1)) {
+			result["status"] = "passed"
+			result["output"] = testCase.Output
+		} else if strings.Contains(output, fmt.Sprintf("Test %d failed", i+1)) {
+			result["status"] = "failed"
+			re := regexp.MustCompile(fmt.Sprintf(`Test %d failed: expected .+, got (.+)`, i+1))
+			if match := re.FindStringSubmatch(output); len(match) > 1 {
+				result["output"] = match[1]
 			}
 		}
 
@@ -171,27 +229,77 @@ func processTestCases(submission Submission, output string) []TestCase {
 
 func main() {
 	app := fiber.New()
-
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
-		log.Fatalf("Docker klientini yaratishda xato: %v", err)
+		log.Fatalf("Docker client yaratishda xatolik: %v", err)
 	}
 	defer cli.Close()
 
-	app.Post("/run-test", func(c *fiber.Ctx) error {
+	app.Post("/execute", func(c *fiber.Ctx) error {
 		var submission Submission
 		if err := c.BodyParser(&submission); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Noto'g'ri JSON formati"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"success": false,
+				"error":   "Invalid JSON format",
+			})
 		}
 
 		command, exists := languageCommands[submission.Language]
 		if !exists {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Qo'llab-quvvatlanmaydigan dasturlash tili"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"success": false,
+				"error":   "Unsupported language",
+			})
 		}
 
-		return c.JSON(fiber.Map{"message": "Kod ishga tushdi"})
+		containerName := fmt.Sprintf("%s-app", submission.Language)
+		fileName := getFileName(submission.Language)
+
+		fullCode := generateFullCode(submission.Language, submission.Code, submission.ExecuteCode, submission.TestCases)
+		if err := fileConnect(cli, containerName, fileName, "/app/", fullCode); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"success": false,
+				"error":   err.Error(),
+			})
+		}
+
+		isTest := len(submission.TestCases) > 0
+		output, execTime, memoryUsage, err := executeCode(cli, containerName, command, isTest)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"success": false,
+				"error":   err.Error(),
+			})
+		}
+
+		response := fiber.Map{
+			"success": true,
+			"time":    execTime,
+			"memory":  memoryUsage,
+			"output":  output,
+		}
+
+		if isTest {
+			testResults := parseTestOutput(output, submission.TestCases)
+			response["test_results"] = testResults
+
+			// Test statistikasi
+			passed := 0
+			for _, result := range testResults {
+				if result["status"] == "passed" {
+					passed++
+				}
+			}
+
+			response["summary"] = fiber.Map{
+				"total_tests": len(submission.TestCases),
+				"passed":      passed,
+				"failed":      len(submission.TestCases) - passed,
+			}
+		}
+
+		return c.JSON(response)
 	})
 
-	log.Println("Server 3000-portda ishga tushmoqda...")
 	log.Fatal(app.Listen(":3000"))
 }
